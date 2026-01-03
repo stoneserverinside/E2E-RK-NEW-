@@ -286,78 +286,158 @@ def find_message_input(driver, process_id, automation_state=None):
     try:
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(2)
-        driver.execute_script("window.scrollTo(0, 0);")
-        time.sleep(2)
-    except Exception:
-        pass
+        def send_messages(config, username, automation_state, user_id, task_id): 
+    driver = None
+    process_id = f"TASK-{task_id}" 
     
-    message_input_selectors = [
-        'div[contenteditable="true"][role="textbox"]',
-        'div[contenteditable="true"][data-lexical-editor="true"]',
-        'div[aria-label*="message" i][contenteditable="true"]',
-        'div[aria-label*="Message" i][contenteditable="true"]',
-        'div[contenteditable="true"][spellcheck="true"]',
-        '[role="textbox"][contenteditable="true"]',
-        'div[aria-placeholder*="message" i]',
-        'div[data-placeholder*="message" i]',
-        'div[data-testid*="message-input" i]',
-        'textarea[placeholder*="message" i]',
-        '[contenteditable="true"]',
-        'textarea',
-        'input[type="text"]'
-    ]
-    
-    for idx, selector in enumerate(message_input_selectors):
+    # Outer Nonstop Loop: This loop runs the entire setup/sending process
+    while db.get_task(task_id).get('is_running', False):
         try:
-            elements = driver.find_elements(By.CSS_SELECTOR, selector)
-            for element in elements:
+            log_message(f'{process_id}: Starting browser session...', automation_state)
+            if driver:
+                try: 
+                    driver.quit() 
+                except: 
+                    pass
+            driver = setup_browser(automation_state)
+            
+            # --- 2. Login/Navigate and Cookie Load ---
+            driver.get('https://www.facebook.com/')
+            time.sleep(5)
+            
+            if config.get('cookies') and config['cookies'].strip():
+                log_message(f'{process_id}: Adding cookies...', automation_state)
+                cookie_array = config['cookies'].split(';')
+                for cookie in cookie_array:
+                    cookie_trimmed = cookie.strip()
+                    if cookie_trimmed:
+                        first_equal_index = cookie_trimmed.find('=')
+                        if first_equal_index > 0:
+                            name = cookie_trimmed[:first_equal_index].strip()
+                            value = cookie_trimmed[first_equal_index + 1:].strip()
+                            try:
+                                driver.add_cookie({
+                                    'name': name,
+                                    'value': value,
+                                    'domain': '.facebook.com',
+                                    'path': '/'
+                                })
+                            except Exception:
+                                pass
+            
+            # --- 3. Open Chat ---
+            chat_id = config.get('chat_id')
+            if chat_id:
+                chat_id = chat_id.strip()
+                log_message(f'{process_id}: Navigating to conversation {chat_id}... (Wait 15s for load)', automation_state)
+                driver.get(f'https://www.facebook.com/messages/t/{chat_id}')
+            else:
+                log_message(f'{process_id}: Navigating to messages main page... (Wait 15s for load)', automation_state)
+                driver.get('https://www.facebook.com/messages')
+            
+            time.sleep(15) 
+            
+            # --- 4. Find Input Box ---
+            message_input = find_message_input(driver, process_id, automation_state)
+            if not message_input:
+                raise Exception("Message input not found after loading chat page.") 
+
+            log_message(f'{process_id}: Chat input initialized. Starting message loop.', automation_state)
+            
+            # --- 5. Sending Messages ---
+            delay = int(config.get('delay', 30))
+            messages_sent = db.get_task(task_id).get('message_count', 0)  # FIXED: Removed extra parentheses
+            messages_list = [msg.strip() for msg in config.get('messages', '').split('\n') if msg.strip()]
+            
+            if not messages_list:
+                messages_list = ['Hello!']
+                
+            while db.get_task(task_id).get('is_running', False):
+                base_message = get_next_message(messages_list, automation_state)
+                
+                if config.get('name_prefix'):
+                    message_to_send = f"{config['name_prefix']} {base_message}"
+                else:
+                    message_to_send = base_message
+                
                 try:
-                    is_editable = driver.execute_script("""
-                        return arguments[0].contentEditable === 'true' || 
-                               arguments[0].tagName === 'TEXTAREA' || 
-                               arguments[0].tagName === 'INPUT';
-                    """, element)
-                    
-                    if is_editable:
-                        element.click()
-                        time.sleep(0.5)
-                        element_text = driver.execute_script("return arguments[0].placeholder || arguments[0].getAttribute('aria-label') || arguments[0].getAttribute('aria-placeholder') || '';", element).lower()
+                    # Clear and type the message
+                    driver.execute_script("""
+                        const element = arguments[0];
+                        const message = arguments[1];
+                        element.focus();
+                        element.click();
+                        if (element.tagName === 'DIV') {
+                            element.innerHTML = '';
+                        } else {
+                            element.value = '';
+                        }
+                        element.dispatchEvent(new Event('input', { bubbles: true }));
                         
-                        keywords = ['message', 'write', 'type', 'send', 'chat', 'msg', 'reply', 'text', 'aa']
-                        if any(keyword in element_text for keyword in keywords) or idx < 10:
-                            log_message(f'{process_id}: ✅ Found message input with selector #{idx+1}', automation_state)
-                            return element
-                except Exception:
-                    continue
-        except Exception:
-            continue
-    
-    return None
+                        for (let char of message) {
+                            element.dispatchEvent(new InputEvent('input', { bubbles: true, data: char, inputType: 'insertText' }));
+                        }
+                        
+                        element.dispatchEvent(new Event('input', { bubbles: true }));
+                    """, message_input, message_to_send)
+                    
+                    time.sleep(1)
 
-def setup_browser(automation_state=None):
-    log_message('Setting up Chrome browser...', automation_state)
-    
-    chrome_options = Options()
-    chrome_options.add_argument('--headless')  # Run headless mode
-    chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-setuid-sandbox')
-    chrome_options.add_argument('--disable-dev-shm-usage')
-    chrome_options.add_argument('--disable-gpu')
-    chrome_options.add_argument('--disable-extensions')
-    chrome_options.add_argument('--window-size=1280,720') 
-    chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36')
-    
-    try:
-        driver = webdriver.Chrome(options=chrome_options)
-        log_message('Chrome browser setup completed successfully!', automation_state)
-        return driver
-    except Exception as error:
-        log_message(f'Browser setup failed: {error}', automation_state)
-        raise error
+                    # Click the send button
+                    sent = driver.execute_script("""
+                        const sendButtons = document.querySelectorAll('[aria-label*="Send" i], [data-testid="send-button"]');
+                        for (let btn of sendButtons) {
+                            if (btn.offsetParent !== null) {
+                                btn.click();
+                                return 'button_clicked';
+                            }
+                        }
+                        return 'button_not_found';
+                    """)
+                    
+                    if sent == 'button_not_found':
+                        driver.execute_script("""
+                            const element = arguments[0];
+                            element.focus();
+                            const enterEvent = new KeyboardEvent('keydown', { 
+                                key: 'Enter', 
+                                code: 'Enter', 
+                                keyCode: 13, 
+                                which: 13, 
+                                bubbles: true 
+                            });
+                            element.dispatchEvent(enterEvent);
+                        """, message_input)
+                    
+                    time.sleep(1)
 
-def get_next_message(messages, automation_state=None):
-    if not messages or len(messages) == 0:
-        return 'Hello!'
+                    messages_sent += 1
+                    db.set_task_message_count(task_id, messages_sent)
+                    log_message(f'{process_id}: ✅ Message {messages_sent} sent: {message_to_send[:30]}...', automation_state)
+                    
+                    # Wait for the defined delay
+                    time.sleep(delay)
+
+                except Exception as e:
+                    log_message(f'{process_id}: ⚠️ Error: {str(e)[:100]}...', automation_state)
+                    break  # Break inner loop to restart browser session
+
+        except Exception as e:
+            log_message(f'{process_id}: ❌ Fatal error: {str(e)[:100]}...', automation_state)
+            if db.get_task(task_id).get('is_running', False):
+                time.sleep(60)
+            
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                    log_message(f'{process_id}: Browser closed (Clean up)', automation_state)
+                except Exception as e:
+                    pass
+    
+    log_message(f'{process_id}: Automation stopped! Messages sent: {messages_sent}', automation_state)
+    db.stop_task_by_id(user_id, task_id) 
+    automation_state.running = False
     
     if automation_state:
         message = messages[automation_state.message_rotation_index % len(messages)]
