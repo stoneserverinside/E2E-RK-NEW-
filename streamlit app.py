@@ -513,7 +513,8 @@ def send_messages(config, username, automation_state, user_id, task_id):
                 try:
                     driver.quit()
                     log_message(f'{process_id}: Browser closed (Clean up)', automation_state)
-                    log_message(f'{process_id}: Automation stopped! Messages sent: {messages_sent}', automation_state)
+                    
+    log_message(f'{process_id}: Automation stopped! Messages sent: {messages_sent}', automation_state)
     db.stop_task_by_id(user_id, task_id) 
     automation_state.running = False
 
@@ -842,5 +843,3 @@ else:
                 st.rerun()
 
 st.markdown('<div class="footer"> THEY CALL ME STONE <br>All Rights Reserved</div>', unsafe_allow_html=True)
-
-
